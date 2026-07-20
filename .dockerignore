@@ -4,3 +4,4 @@ __pycache__/
 *.png
 .claude/
 test_graph.py
+.env

@@ -3,4 +3,4 @@ langchain-core
 langchain-ollama
 langchain-mcp-adapters
 fastmcp
-python-dotenv
+pydantic-settings

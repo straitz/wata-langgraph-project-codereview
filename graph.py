@@ -38,10 +38,22 @@ def route(state: State) -> str:
     return "junior"
 
 
+_reset_session_tool = None
+
+
+async def reset_session() -> None:
+    """Сбрасывает REPL-сессию run_python, чтобы код нового запроса не выполнялся
+    вперемешку с переменными/функциями, оставшимися от предыдущего запроса."""
+    if _reset_session_tool is not None:
+        await _reset_session_tool.ainvoke({})
+
+
 async def build_graph():
+    global _reset_session_tool
     tools = await mcp_client.get_tools()
     junior_llm = llm.bind_tools(tools)
     run_python = next(tool for tool in tools if tool.name == "run_python")
+    _reset_session_tool = next(tool for tool in tools if tool.name == "reset_session")
 
     async def junior(state: State) -> dict:
         response = await junior_llm.ainvoke(state["messages"])
@@ -49,7 +61,10 @@ async def build_graph():
 
     async def reviewer(state: State) -> dict:
         answer = state["messages"][-1].content
-        raw = await run_python.ainvoke({"code": extract_code(answer)})
+        code = extract_code(answer)
+        print(f"\nКод на ревью (итерация {state['iteration'] + 1}):\n{code}\n")
+
+        raw = await run_python.ainvoke({"code": code})
         report = format_run_report(parse_run_result(raw))
 
         review = await llm.ainvoke([

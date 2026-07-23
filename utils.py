@@ -6,11 +6,41 @@ from langchain_core.messages import AnyMessage, SystemMessage, ToolMessage
 from config import MAX_MESSAGES
 
 CODE_BLOCK = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
+JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def _find_code_field(obj) -> str | None:
+    if isinstance(obj, dict):
+        code = obj.get("code")
+        if isinstance(code, str):
+            return code
+        for value in obj.values():
+            found = _find_code_field(value)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_code_field(item)
+            if found is not None:
+                return found
+    return None
 
 
 def extract_code(text: str) -> str:
     blocks = CODE_BLOCK.findall(text)
-    return blocks[-1].strip() if blocks else text.strip()
+    if blocks:
+        return blocks[-1].strip()
+
+    match = JSON_OBJECT.search(text)
+    if match:
+        try:
+            code = _find_code_field(json.loads(match.group()))
+        except json.JSONDecodeError:
+            code = None
+        if code is not None:
+            return code.strip()
+
+    return text.strip()
 
 
 def parse_run_result(raw) -> dict:

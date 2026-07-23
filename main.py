@@ -3,7 +3,7 @@ import asyncio
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
 
 from config import MAX_ITER, MAX_RETRIES, MODEL, RETRY_DELAY
-from graph import build_graph
+from graph import build_graph, reset_session
 from prompts import JUNIOR_PROMPT
 from utils import save_graph_png, trim_context_if_needed
 
@@ -11,8 +11,6 @@ from utils import save_graph_png, trim_context_if_needed
 async def main() -> None:
     graph = await build_graph()
     save_graph_png(graph)
-
-    history: list[AnyMessage] = [SystemMessage(content=JUNIOR_PROMPT)]
 
     print(f"Джуниор + Ревьюер с исполнением кода через MCP, петля до {MAX_ITER} кругов ({MODEL}). Напиши 'exit' для выхода.\n")
     while True:
@@ -26,11 +24,17 @@ async def main() -> None:
         if not user_input:
             continue
 
-        history.append(HumanMessage(content=user_input))
+        # Каждый запрос - независимая задача с чистого листа: не тащим в контекст
+        # код и вердикты из предыдущих запросов, чтобы модель их не путала и не переиспользовала.
+        messages: list[AnyMessage] = [
+            SystemMessage(content=JUNIOR_PROMPT),
+            HumanMessage(content=user_input),
+        ]
+        await reset_session()
 
         for attempt in range(MAX_RETRIES):
             try:
-                result = await graph.ainvoke({"messages": history, "iteration": 0})
+                result = await graph.ainvoke({"messages": messages, "iteration": 0})
                 break
             except Exception as e:
                 print(f"Ошибка (попытка {attempt + 1}/{MAX_RETRIES}): {e}")
@@ -39,13 +43,11 @@ async def main() -> None:
                     print(f"Повтор через {delay} с...")
                     await asyncio.sleep(delay)
         else:
-            history.pop()
             continue
 
-        history = trim_context_if_needed(result["messages"])
+        final_messages = trim_context_if_needed(result["messages"])
 
-        print(f"\nФинальный код (после {result['iteration']} ревью):\n{history[-2].content}\n")
-        print(f"Вердикт ревьюера:\n{history[-1].content}\n")
+        print(f"\nВердикт ревьюера (после {result['iteration']} ревью):\n{final_messages[-1].content}\n")
 
 
 if __name__ == "__main__":

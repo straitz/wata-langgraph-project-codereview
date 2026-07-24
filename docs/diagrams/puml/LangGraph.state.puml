@@ -1,0 +1,43 @@
+@startuml
+title graph.py - state machine junior / tools / reviewer
+
+[*] --> junior : START
+
+state "junior\n(junior_llm.ainvoke)" as junior {
+  junior : LLM генерирует ответ,
+  junior : при необходимости вызывает
+  junior : tool run_python
+}
+
+state "tools\n(ToolNode)" as tools {
+  tools : Выполняет вызванный MCP-tool
+  tools : (run_python) и возвращает
+  tools : ToolMessage с результатом
+}
+
+state "reviewer" as reviewer {
+  reviewer : run_python.ainvoke(code) - контрольный прогон
+  reviewer : llm.ainvoke(REVIEWER_PROMPT + код + отчёт о прогоне)
+  reviewer : iteration += 1
+}
+
+junior --> tools : should_continue():\nlast.tool_calls непусто
+junior --> reviewer : should_continue():\nlast.tool_calls пуст
+tools --> junior : всегда
+
+reviewer --> junior : route():\nverdict != APPROVED\nи iteration < MAX_ITER
+reviewer --> [*] : route():\nverdict.startswith(APPROVED)\nили iteration >= MAX_ITER
+
+note right of reviewer
+  Если прогон run_python внутри reviewer
+  падает с ошибкой - REVIEWER_PROMPT требует
+  вердикт REVISE (см. prompts.py).
+end note
+
+note bottom of junior
+  Ошибочный/сбойный ainvoke на уровне графа
+  ловится снаружи, в main.py (ретраи,
+  см. DG-1.ProcessUserRequest.activity.puml)
+end note
+
+@enduml

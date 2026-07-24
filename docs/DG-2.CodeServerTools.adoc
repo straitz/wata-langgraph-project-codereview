@@ -1,0 +1,96 @@
+:document-name: DG-2.CodeServerTools
+:diagrams-directory: /diagrams
+:diagrams-puml-directory: {diagrams-directory}/puml
+:document-diagrams-puml-name: {diagrams-puml-directory}/{document-name}
+
+:toc: macro
+:sectnums:
+
+= MCP tools: run_python и reset_session (code_server.py)
+
+[.text-right]
+{document-name}.adoc
+
+toc::[]
+
+== Описание
+`code_server.py` - MCP-сервер (FastMCP) с двумя инструментами, вызываемыми узлами `junior` и
+`reviewer` графа (см. link:DG-1.ProcessUserRequest.adoc[]):
+
+- **`run_python`** - выполняет код в единственной долгоживущей REPL-сессии (переменные, импорты и
+  функции сохраняются между вызовами, как в ноутбуке). Значение последнего "голого" выражения
+  печатается автоматически. Выполнение ограничено таймаутом `EXEC_TIMEOUT`; зависший поток нельзя
+  безопасно прервать, поэтому при таймауте клиенту сразу уходит `returncode=-1`, а поток продолжает
+  висеть в фоне.
+- **`reset_session`** - сбрасывает сессию (как перезапуск ядра ноутбука). Вызывается из `main.py`
+  перед каждым новым запросом пользователя, чтобы код и переменные разных запросов не путались.
+
+**ПРИМЕЧАНИЕ**: код выполняется БЕЗ песочницы, тем же интерпретатором, с доступом к диску и сети
+(см. README.md, раздел "осторожно").
+
+== Диаграмма активности (run_python)
+.{document-diagrams-puml-name}.activity.puml
+[plantuml]
+----
+include::.{document-diagrams-puml-name}.activity.puml[]
+----
+
+`reset_session` диаграммы не требует: `_session.clear()` + `_session.update({"__name__": "__main__"})`
+под тем же `_session_lock`.
+
+== Описание алгоритма
+
+=== run_python - Request/Response
+[width="100%", cols="1, 5, 3, 1, 5, 5"]
+|===
+|# |Parameter |Type |Required| Description | Comment
+6+^|Request (tool call arguments)
+|{counter:RP} |`code` |`string` |+ |Код Python для выполнения в сессии |`not-empty`
+6+^|Response
+|{counter:RP} |`ok` |`boolean` |+ |`true`, если код выполнился без исключений |
+|{counter:RP} |`stdout` |`string` |+ |Вывод + значение последнего выражения | `""`, если пусто
+|{counter:RP} |`stderr` |`string` |+ |Traceback исключения | `""`, если ошибок нет
+|{counter:RP} |`returncode` |`integer` |+ |Код завершения |`0` успех, `1` исключение, `-1` таймаут
+|===
+
+=== reset_session - Request/Response
+[width="100%", cols="1, 5, 3, 1, 5, 5"]
+|===
+|# |Parameter |Type |Required| Description | Comment
+6+^|Request
+|{counter:RS} | | | |без параметров |
+6+^|Response
+|{counter:RS} |`ok` |`boolean` |+ |всегда `true` |
+|{counter:RS} |`stdout` |`string` |+ |всегда `"Сессия сброшена."` |
+|{counter:RS} |`stderr` / `returncode` | |+ |всегда `""` / `0` |
+|===
+
+== Примеры
+
+=== run_python: успех и исключение
+.Request / Response
+[source]
+----
+run_python(code="x = 2 + 2\nx")
+-> { "ok": true, "stdout": "4\n", "stderr": "", "returncode": 0 }
+
+run_python(code="1 / 0")
+-> { "ok": false, "stdout": "", "stderr": "...ZeroDivisionError: division by zero\n", "returncode": 1 }
+----
+
+=== run_python: состояние сохраняется между вызовами
+.Request / Response
+[source]
+----
+run_python(code="def greet(name):\n    return f'Привет, {name}!'")
+-> { "ok": true, "stdout": "", "stderr": "", "returncode": 0 }
+
+run_python(code="greet('Айсен')")
+-> { "ok": true, "stdout": "'Привет, Айсен!'\n", "stderr": "", "returncode": 0 }
+
+reset_session()
+-> { "ok": true, "stdout": "Сессия сброшена.", "stderr": "", "returncode": 0 }
+
+run_python(code="greet('Айсен')")
+-> { "ok": false, "stdout": "", "stderr": "...NameError: name 'greet' is not defined\n", "returncode": 1 }
+----

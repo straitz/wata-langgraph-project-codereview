@@ -1,0 +1,65 @@
+:document-name: DG-0.Domain
+:diagrams-directory: /diagrams
+:diagrams-puml-directory: {diagrams-directory}/puml
+:document-diagrams-puml-name: {diagrams-puml-directory}/{document-name}
+
+:toc: macro
+:sectnums:
+
+= Домен: junior + reviewer с исполнением кода через MCP
+
+[.text-right]
+{document-name}.adoc
+
+toc::[]
+
+== Описание домена
+Консольный пет-проект на LangGraph: одна LLM (**junior**) пишет код по запросу пользователя, вторая
+(**reviewer**) его ревьюит - не "на глаз", а по результату реального прогона через `run_python`.
+Обе роли - узлы одного `StateGraph` (`graph.py`), а не отдельные сервисы; прогон кода вынесен во
+внешний MCP-сервер (`code_server.py`), к которому приложение подключается как MCP-клиент по stdio.
+
+Концепты домена:
+
+- **State** - история сообщений (`messages`) и счётчик итераций ревью (`iteration`)
+- **junior / tools / reviewer** - узлы графа (LLM-вызов, исполнение инструмента, LLM-вердикт)
+- **CodeRunner** (`code_server.py`) - MCP-сервер с `run_python`/`reset_session` и общей REPL-сессией
+- **Ollama** - локальный inference-сервер (по умолчанию `llama3.2:latest`)
+
+Операция верхнего уровня - link:DG-1.ProcessUserRequest.adoc[], инструменты CodeRunner -
+link:DG-2.CodeServerTools.adoc[].
+
+== Общая архитектура
+.{diagrams-puml-directory}/Architecture.component.puml
+[plantuml]
+----
+include::.{diagrams-puml-directory}/Architecture.component.puml[]
+----
+
+== Схема состояний графа (LangGraph)
+Узлы `junior` / `tools` / `reviewer` и переходы между ними (`should_continue`, `route`), см. `graph.py`.
+
+.{diagrams-puml-directory}/LangGraph.state.puml
+[plantuml]
+----
+include::.{diagrams-puml-directory}/LangGraph.state.puml[]
+----
+
+== Конфигурация домена
+Все параметры читаются из `.env` через `pydantic-settings` (`config.py`), с валидацией и дефолтами:
+
+[width="100%", cols="2, 2, 1, 4"]
+|===
+|Переменная |Дефолт |Ограничение |Назначение
+
+|`OLLAMA_MODEL` |`llama3.2:latest` | |Модель Ollama для junior и reviewer
+|`OLLAMA_URL` |`http://localhost:11434` | |URL Ollama-сервера
+|`MAX_ITER` |`3` |`>= 1` |Максимум кругов ревью (junior -> reviewer) на один запрос
+|`MAX_RETRIES` |`3` |`>= 1` |Ретраи `graph.ainvoke`, если он упал целиком
+|`RETRY_DELAY` |`1` |`>= 0` |Базовая задержка ретрая (сек), растёт экспоненциально
+|`MAX_MESSAGES` |`16` |`>= 1` |Окно истории сообщений после ответа (`trim_context_if_needed`)
+|`EXEC_TIMEOUT` |`10` |`>= 1` |Лимит выполнения кода в `run_python` (сек)
+|===
+
+**ВАЖНО**: `run_python` выполняет код БЕЗ песочницы - тем же интерпретатором, с доступом к диску и сети
+(см. README.md, раздел "осторожно").

@@ -1,0 +1,55 @@
+@startuml
+title Архитектура проекта - junior + reviewer с исполнением кода через MCP
+
+skinparam componentStyle rectangle
+
+actor "Пользователь" as User
+
+package "Приложение (host process)" {
+  component "main.py\n(консольный цикл)" as Main
+  component "graph.py\n(LangGraph StateGraph)" as Graph
+  component "prompts.py" as Prompts
+  component "config.py\n(pydantic Settings, .env)" as Config
+  component "utils.py" as Utils
+  component "MultiServerMCPClient" as MCPClient
+}
+
+package "code_server.py (FastMCP server)" as CodeServer {
+  component "run_python" as RunPython
+  component "reset_session" as ResetSession
+  database "_session\n(REPL namespace,\nзащищён _session_lock)" as Session
+}
+
+cloud "Ollama" as Ollama {
+  component "llama3.2 (ChatOllama)" as LLM
+}
+
+User -down-> Main : запрос в консоли\n("Ты: ...")
+Main -down-> Graph : build_graph()\nawait reset_session()\nawait graph.ainvoke(...)
+Main -down-> Utils : trim_context_if_needed()\nsave_graph_png()
+Main -down-> Prompts : JUNIOR_PROMPT
+Graph -down-> Prompts : REVIEWER_PROMPT
+Main .down.> Config : MAX_RETRIES, RETRY_DELAY,\nMAX_MESSAGES
+Graph .down.> Config : MAX_ITER
+
+Graph -down-> MCPClient : get_tools()\nbind_tools() -> junior_llm
+MCPClient -down-> CodeServer : stdio transport\n(spawn: python code_server.py)
+
+RunPython -down-> Session : exec/eval кода\nв общем namespace
+ResetSession -down-> Session : session.clear()
+
+Graph -up-> LLM : ChatOllama.ainvoke()\n(узлы junior и reviewer)
+
+RunPython .right.> Config : EXEC_TIMEOUT\n(таймаут потока)
+
+note right of CodeServer
+  Один долгоживущий процесс на всё время работы приложения.
+  Состояние REPL-сессии сохраняется между вызовами run_python,
+  пока reset_session() не сбросит его (перед каждым новым
+  запросом пользователя, см. DG-1.ProcessUserRequest.activity.puml).
+
+  run_python выполняет код БЕЗ песочницы -
+  тем же интерпретатором, с доступом к диску и сети.
+end note
+
+@enduml

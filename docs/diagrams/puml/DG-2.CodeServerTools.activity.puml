@@ -1,0 +1,67 @@
+@startuml
+title MCP tool run_python - выполнение кода в общей REPL-сессии
+
+start
+
+:code : string;
+note: R1
+
+:out, err = StringIO(), StringIO();
+:box = \{"ok": false\};
+
+:acquire _session_lock;
+
+:worker = Thread(_run_in_session,\n  args=(code, out, err, box));
+:worker.start();
+:worker.join(timeout=EXEC_TIMEOUT);
+
+if (worker ещё жив\n(таймаут истёк)?) then (да)
+  :release _session_lock;
+  :Build response\nwith: ok=false,\nstderr="Превышен лимит\nвремени выполнения",\nreturncode=-1;
+  note
+    Поток нельзя безопасно убить -
+    он продолжает висеть в фоне,
+    но stdio-транспорт MCP не ломается,
+    т.к. print внутри сессии пишет
+    в свой StringIO, а не в sys.stdout
+  end note
+  stop
+endif
+
+partition "_run_in_session (в потоке worker)" {
+  if (ast.parse(code, mode="exec")\nбросил SyntaxError?) then (да)
+    :traceback.print_exc(file=err);
+    :box.ok = false;
+  else (нет)
+    :tree = результат парсинга;
+
+    if (последний statement - "голое"\nвыражение?) then (да)
+      :last_expr = вырезать его\nиз tree.body;
+    endif
+
+    :_session["print"] = print(file=out);
+
+    if (exec/eval бросили\nException?) then (да)
+      :traceback.print_exc(file=err);
+      :box.ok = false;
+    else (нет)
+      :exec(compile(tree), _session);
+      if (last_expr задан?) then (да)
+        :value = eval(compile(last_expr), _session);
+        if (value is not None?) then (да)
+          :print(repr(value), file=out);
+        endif
+      endif
+      :box.ok = true;
+    endif
+  endif
+}
+
+:release _session_lock;
+
+:Build response\nwith: ok=box.ok,\nstdout=out.getvalue(),\nstderr=err.getvalue(),\nreturncode=(0 если ok иначе 1);
+note: R2
+
+stop
+
+@enduml

@@ -1,0 +1,41 @@
+@startuml
+title Узел "reviewer" - контрольный прогон и вердикт
+
+start
+
+:answer = messages[-1].content;
+note: A3.R1
+
+:code = extract_code(answer);
+note
+    Ищем последний ```python``` блок,
+    иначе - code-поле в JSON,
+    иначе - весь текст как есть
+end note
+
+#palegreen :raw = await run_python.ainvoke(code);
+note: MCP tool run_python\nсм. DG-2.CodeServerTools.adoc
+
+:report = format_run_report(\n  parse_run_result(raw));
+note: "Статус: успешно/с ошибкой (returncode=...)"\n+ stdout + stderr
+
+#palegreen :review = await llm.ainvoke([\n  SystemMessage(REVIEWER_PROMPT),\n  HumanMessage(код + report)\n]);
+
+:messages += [HumanMessage(review.content)];
+:iteration += 1;
+note: A3.R2
+
+if (iteration >= MAX_ITER?) then (да)
+  :-> END;
+  note: route()
+elseif (review.content startswith APPROVED?) then (да)
+  :-> END;
+  note: route()
+else (нет)
+  :-> "junior";
+  note: route()\n(REVISE, есть ещё попытки)
+endif
+
+stop
+
+@enduml

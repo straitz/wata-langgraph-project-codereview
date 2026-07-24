@@ -1,0 +1,140 @@
+:document-name: DG-1.ProcessUserRequest
+:diagrams-directory: /diagrams
+:diagrams-puml-directory: {diagrams-directory}/puml
+:document-diagrams-puml-name: {diagrams-puml-directory}/{document-name}
+
+:toc: macro
+:sectnums:
+
+= Обработка запроса пользователя (junior -> reviewer через LangGraph)
+
+[.text-right]
+{document-name}.adoc
+
+toc::[]
+
+== Описание
+Ввод строки пользователем (`main.py`) запускает один прогон `StateGraph` (см. `graph.py`): узел
+**junior** пишет код и может вызвать `run_python` для самопроверки; узел **reviewer** независимо
+прогоняет тот же код и выносит вердикт `APPROVED`/`REVISE`. Пока вердикт - `REVISE` и не исчерпан
+`MAX_ITER`, цикл `junior -> reviewer` повторяется.
+
+Каждый запрос обрабатывается с чистого листа: история и REPL-сессия `run_python`
+(см. link:DG-2.CodeServerTools.adoc[]) сбрасываются перед стартом графа. Если `graph.ainvoke`
+падает с исключением, `main.py` повторяет попытку до `MAX_RETRIES` раз с экспоненциальной
+задержкой; при исчерпании попыток запрос пропускается.
+
+== Диаграмма активности
+.{document-diagrams-puml-name}.activity.puml
+[plantuml]
+----
+include::.{document-diagrams-puml-name}.activity.puml[]
+----
+
+== Описание алгоритма
+
+=== R1 Request
+[width="100%", cols="1, 5, 3, 1, 5, 5"]
+|===
+|# |Parameter |Type |Required| Description | Comment
+
+6+^|Console input
+|{counter:R1} |`user_input` |`string` |+ |Строка запроса, прочитанная из `input("Ты: ")` |`not-empty`, иначе запрос пропускается (`continue`)
+|===
+
+=== R2 Response
+[width="100%", cols="1, 5, 3, 1, 5, 5"]
+|===
+|# |Parameter |Type |Required| Description | Comment
+
+6+^|Console output
+|{counter:R2} |`verdict` |`string` |+ |Финальное сообщение reviewer'а |Начинается с `APPROVED` или `REVISE`
+|{counter:R2} |`iteration` |`integer` |+ |Число выполненных кругов ревью | `<= MAX_ITER`
+|===
+
+[[A1]]
+=== A1 Junior генерирует ответ (узел "junior")
+`junior_llm.ainvoke(messages)` - LLM с забинженными MCP-инструментами. Ответ либо содержит
+финальный код, либо `tool_calls` с вызовом `run_python` для самопроверки. Пусто `tool_calls` ->
+переход в `reviewer`, иначе -> `tools` (`should_continue`, см. диаграмму состояний в
+link:DG-0.Domain.adoc[]).
+
+[[A2]]
+=== A2 Исполнение инструмента (узел "tools")
+`ToolNode` исполняет вызванный junior'ом инструмент (`run_python`) через MCP-клиент, см.
+link:DG-2.CodeServerTools.adoc[]. После выполнения управление возвращается в узел `junior`.
+
+[[A3]]
+=== A3 Reviewer делает контрольный прогон и выносит вердикт (узел "reviewer")
+Reviewer берёт финальный код junior'а, независимо прогоняет его через `run_python`
+(см. link:DG-2.CodeServerTools.adoc[]) и просит LLM оценить код **с учётом результата прогона**:
+если прогон завершился с ошибкой, вердикт всегда `REVISE`, вне зависимости от мнения модели о коде.
+
+.{document-diagrams-puml-name}.Reviewer.activity.puml
+[plantuml]
+----
+include::.{document-diagrams-puml-name}.Reviewer.activity.puml[]
+----
+
+==== A3.R1 Request
+[width="100%", cols="1, 5, 3, 1, 5, 5"]
+|===
+|# |Parameter |Type |Required| Description | Comment
+6+^|State
+|{counter:A3.R1} |`messages[-1].content` |`string` |+ |Финальный ответ junior'а, из которого извлекается код | `extract_code()`
+|===
+
+==== A3.R2 Response
+[width="100%", cols="1, 5, 3, 1, 5, 5"]
+|===
+|# |Parameter |Type |Required| Description | Comment
+6+^|State
+|{counter:A3.R2} |`messages` |`array of AnyMessage` |+ |+ `HumanMessage(review.content)` |
+|{counter:A3.R2} |`iteration` |`integer` |+ |Увеличивается на 1 | `route()`: `REVISE` и `iteration < MAX_ITER` -> `junior`; иначе -> `END`
+|===
+
+== Примеры
+
+=== Успешный запрос (одобрено с первой попытки)
+.Console
+[source]
+----
+Ты: напиши функцию суммы списка чисел
+
+Код на ревью (итерация 1):
+def sum_list(numbers):
+    return sum(numbers)
+
+sum_list([1, 2, 3])
+
+Вердикт ревьюера (после 1 ревью):
+APPROVED. Код простой и корректно решает задачу, прогон run_python вернул 6 без ошибок.
+----
+
+=== Запрос с правками (REVISE -> junior -> APPROVED)
+.Console
+[source]
+----
+Ты: раздели два числа
+
+Код на ревью (итерация 1):
+def divide(a, b):
+    return a / b
+
+divide(10, 0)
+
+Вердикт ревьюера (после 1 ревью):
+REVISE. Прогон run_python завершился с ошибкой: ZeroDivisionError: division by zero.
+Нужно обработать деление на ноль.
+
+Код на ревью (итерация 2):
+def divide(a, b):
+    if b == 0:
+        raise ValueError("Деление на ноль недопустимо")
+    return a / b
+
+divide(10, 2)
+
+Вердикт ревьюера (после 2 ревью):
+APPROVED. Проверка на ноль добавлена, прогон run_python выполнился без ошибок (5.0).
+----

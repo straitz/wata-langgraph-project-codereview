@@ -1,0 +1,61 @@
+@startuml
+title main.py - обработка одного запроса пользователя
+
+start
+
+:build_graph();
+note: строит StateGraph и подключается\nк MCP-серверу code_server.py
+
+:save_graph_png(graph);
+note: рендерит схему в graph.png\n(лучший эффорт, ошибка не фатальна)
+
+repeat
+  :input("Ты: ");
+  note: чтение строки из консоли
+
+  if (пусто?) then (да)
+  elseif (exit / quit / выход?) then (да)
+    stop
+  else (нет)
+    :messages = [\n  SystemMessage(JUNIOR_PROMPT),\n  HumanMessage(user_input)\n];
+    note
+      Каждый запрос - независимая задача:
+      контекст предыдущих запросов не тащим
+    end note
+
+    #palegreen :await reset_session();
+    note: MCP tool "reset_session"\n(сброс REPL-сессии run_python)
+
+    :attempt = 0;
+    :success = false;
+    repeat
+      :attempt += 1;
+      #palegreen :result = await graph.ainvoke(\n  {messages, iteration: 0});
+      note
+        StateGraph: junior <-> tools -> reviewer -> junior | END
+        см. LangGraph.state.puml
+      end note
+      if (исключение?) then (да)
+        :Печать "Ошибка (попытка N/MAX_RETRIES)";
+        if (attempt < MAX_RETRIES?) then (да)
+          :sleep(RETRY_DELAY * 2^(attempt-1));
+        endif
+      else (нет)
+        :success = true;
+      endif
+    repeat while (not success\nи attempt < MAX_RETRIES?) is (да) not (нет)
+
+    if (success?) then (нет)
+      :continue -\nк следующему вводу;
+    else (да)
+      :final_messages = trim_context_if_needed(\n  result.messages);
+      note: обрезка истории до MAX_MESSAGES,\nбез "осиротевшего" ToolMessage первым
+
+      :Печать вердикта ревьюера\n(APPROVED/REVISE)\nи числа итераций;
+    endif
+  endif
+repeat while (не exit/quit/выход)
+
+stop
+
+@enduml
